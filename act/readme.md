@@ -1,6 +1,6 @@
 # using act on Windows to run GitHub Actions locally
 ## introduction
-Some notes on how to use [act](https://nektos.github.io/act/) on Windows to run GitHub Actions workflows locally for
+Some notes on how to use [act](https://nektosact.com/) on Windows to run GitHub Actions workflows locally for
 quick testing without pushing changes to GitHub.
 
 The current setup uses the "self-hosted" runner type, which requires all necessary tools to be installed on the host
