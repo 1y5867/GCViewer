@@ -11,12 +11,12 @@ set -euo pipefail
 # General toggles
 DRY_RUN="${DRY_RUN:-true}"                  # when true, skip pushes/deploys and only log actions
 SNAPSHOT_BRANCH="${SNAPSHOT_BRANCH:-develop}"
-RELEASE_BRANCH="${RELEASE_BRANCH:-master}"  # change to "main" if your default branch is main
 RELEASE_JDK="${RELEASE_JDK:-openjdk8}"      # only run release logic on this JDK label
 
 # CI-provided values (GitHub Actions)
 CI_JDK_VERSION="${CI_JDK_VERSION:-}"        # expected to be set by workflow, e.g. "openjdk8"
 CI_COMMIT_MESSAGE="${CI_COMMIT_MESSAGE:-}"  # set in workflow from head commit or PR title
+CI_RELEASE_BUILD="${CI_RELEASE_BUILD:-false}"  # set to "true" by workflow_dispatch input to trigger a release
 
 # Derive branch / PR info from GitHub vars
 if [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ]; then
@@ -29,8 +29,11 @@ fi
 
 echo "CI_IS_PR = ${CI_IS_PR}"
 echo "CI_BRANCH = ${CI_BRANCH}"
+echo "SNAPSHOT_BRANCH = ${SNAPSHOT_BRANCH}"
+echo "RELEASE_JDK = ${RELEASE_JDK}"
 echo "CI_JDK_VERSION = ${CI_JDK_VERSION}"
 echo "CI_COMMIT_MESSAGE = ${CI_COMMIT_MESSAGE}"
+echo "CI_RELEASE_BUILD = ${CI_RELEASE_BUILD}"
 echo "DRY_RUN = ${DRY_RUN}"
 
 #####################
@@ -72,14 +75,6 @@ function push_to_github() {
   fi
 }
 
-function merge_with_develop_branch() {
-  # assumption: we are not on the develop branch and should merge CI_BRANCH into develop
-  echo "merging ${CI_BRANCH} into develop"
-  git fetch --prune --tags
-  git checkout develop
-  git merge "${CI_BRANCH}"
-}
-
 function perform_release() {
   echo "----------------"
   echo perform release
@@ -91,13 +86,24 @@ function perform_release() {
     mvn clean verify javadoc:javadoc
   else
     # maven release needs a locally checked out branch, otherwise "git symbolic-ref HEAD" will fail
+    git config checkout.defaultRemote origin
     git checkout "${CI_BRANCH}"
+    gpg --version
     openssl version
-    openssl enc -d -aes-256-cbc -md sha1 -pass pass:"$ENCRYPTION_PASSWORD" -in "$GPG_DIR/pubring.gpg.enc" -out "$GPG_DIR/pubring.gpg"
-    openssl enc -d -aes-256-cbc -md sha1 -pass pass:"$ENCRYPTION_PASSWORD" -in "$GPG_DIR/secring.gpg.enc" -out "$GPG_DIR/secring.gpg"
+    # import GPG key into temporary home directory
+    export GNUPGHOME=$(mktemp -d)
+    echo "allow-loopback-pinentry" >> "$GNUPGHOME/gpg-agent.conf"
+    gpgconf --reload gpg-agent
+
+    echo "trying to decrypt keys"
+    openssl enc -d -a -aes-256-cbc -pbkdf2 -iter 500000 -pass env:ENCRYPTION_PASSWORD \
+      -in "$GPG_DIR/private-key.asc.enc" | gpg --batch --import
+    openssl enc -d -a -aes-256-cbc -pbkdf2 -iter 500000 -pass env:ENCRYPTION_PASSWORD \
+      -in "$GPG_DIR/public-key.asc.enc" | gpg --batch --import
+
     mvn --batch-mode release:clean release:prepare release:perform --settings ./cicd/settings.xml
-    # remove decrypted keyrings
-    rm "$GPG_DIR"/*.gpg
+
+    rm -rf "$GNUPGHOME"
   fi
 
   init_github
@@ -107,13 +113,6 @@ function perform_release() {
     echo "DRY_RUN: git push origin-github \$(git describe --tags --abbrev=0)"
   else
     git push origin-github "$(git describe --tags --abbrev=0)"
-  fi
-  if [ "${DRY_RUN}" = "true" ]; then
-    echo "DRY_RUN: skip merging ${CI_BRANCH} into develop"
-    echo "DRY_RUN: skip pushing develop"
-  else
-    merge_with_develop_branch
-    push_to_github develop
   fi
 }
 
@@ -129,10 +128,10 @@ function perform_verify() {
 #####################
 # Only release on non-PR, non-release-plugin commits, and the designated JDK
 if [ "${CI_IS_PR}" = "false" ] && [[ ! "${CI_COMMIT_MESSAGE}" = \[maven-release-plugin\]* ]] && [ "${CI_JDK_VERSION}" = "${RELEASE_JDK}" ]; then
-  if [ "${CI_BRANCH}" = "${SNAPSHOT_BRANCH}" ]; then
-    perform_snapshot_release
-  elif [ "${CI_BRANCH}" = "${RELEASE_BRANCH}" ]; then
+  if [ "${CI_RELEASE_BUILD}" = "true" ]; then
     perform_release
+  elif [ "${CI_BRANCH}" = "${SNAPSHOT_BRANCH}" ]; then
+    perform_snapshot_release
   else
     # all other branches: verify only
     perform_verify
