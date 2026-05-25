@@ -4,7 +4,7 @@ run-name: >-
   ${{
     github.event_name == 'pull_request' && 'pull request build' ||
     github.event_name == 'push' && 'snapshot build' ||
-    github.event_name == 'workflow_dispatch' && inputs.RELEASE_BUILD == 'true' && 'release build' ||
+    github.event_name == 'workflow_dispatch' && inputs.RELEASE_BUILD && 'release build' ||
     'snapshot build'
   }}
 
